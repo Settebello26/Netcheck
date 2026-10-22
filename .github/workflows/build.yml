@@ -1,0 +1,49 @@
+name: build
+on:
+  workflow_dispatch:
+    inputs:
+      pubblica:
+        description: "Pubblica anche come release (per Obtainium)"
+        type: boolean
+        default: false
+permissions:
+  contents: write
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: 17}
+      - uses: gradle/actions/setup-gradle@v4
+        with: {gradle-version: 8.7}
+      - name: Chiave di firma
+        env:
+          KS_PASS: ${{ secrets.KS_PASS }}
+        run: |
+          test -n "$KS_PASS" || { echo "Manca il secret KS_PASS"; exit 1; }
+          if [ ! -f release.p12 ]; then
+            keytool -genkeypair -keystore release.p12 -storetype PKCS12 -storepass "$KS_PASS" -keypass "$KS_PASS" -alias netcheck -keyalg RSA -keysize 4096 -validity 10000 -dname "CN=NetCheck"
+            git config user.name netcheck-bot
+            git config user.email bot@users.noreply.github.com
+            git add release.p12
+            git commit -m "Chiave di firma"
+            git push
+          fi
+      - run: unzip -q -o ./*.zip
+      - name: Compila
+        env:
+          KS_PATH: ${{ github.workspace }}/release.p12
+          KS_PASS: ${{ secrets.KS_PASS }}
+          VERSION_CODE: ${{ github.run_number }}
+        run: |
+          cd netcheck/android
+          gradle assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/netcheck.apk"
+      - uses: actions/upload-artifact@v4
+        with: {name: netcheck-apk, path: netcheck.apk}
+      - name: Release
+        if: ${{ inputs.pubblica }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v${{ github.run_number }}" netcheck.apk --title "NetCheck v${{ github.run_number }}" --notes "Versione ${{ github.run_number }}"
